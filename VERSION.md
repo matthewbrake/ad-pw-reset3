@@ -1,22 +1,13 @@
+# Version History - AD Notifier Enterprise
 
-# Version History - Azure AD Password Notifier
+## [v2.8.0] - Mission Control Restoration
+- **Fixed**: Tab-switching data loss by standardizing `/api/config` as the primary state engine.
+- **Restored**: Permission Checklist (Green/Red) for Azure AD Scopes.
+- **Restored**: "Last Sync" timestamp on Dashboard.
+- **Improved**: Console verbosity with strict color-coding (Gray, Yellow, Red, Green).
+- **Improved**: Environment switcher now allows naming profiles before adding.
+- **Design**: Reverted button sizes and fonts to match the high-contrast slate side-nav.
 
-## [v2.5.0] - Profile Intelligence & Simulation
-### Added
-- **Live Mail Merge**: Preview pane in the editor now maps real directory data to variables.
-- **Flip Records**: Cycle through targeted users within the editor to verify template accuracy.
-- **Group Verification**: "Verify" button to check if the assigned Azure AD groups match directory records.
-- **Recipient Matrix**: Restored CC Manager, CC Admins, and Read Receipt options to profiles.
-- **Scheduling Context**: Added "Preferred Time" support for queued deliveries.
-
-### Improved
-- **Data Persistence**: Atomic writes for Profiles to prevent data loss during simultaneous edits.
-- **Directory Cache**: One-time fetch of users/groups shared across the dashboard and profile editor.
-
-## [v2.4.0] - Audit Compliance & Restoration
-### Restored
-- **SMTP Configuration**: Full SMTP engine returned to Settings tab.
-- **Consent Workflow**: Deep-links for Azure Portal admin consent.
-
-## [v2.3.0] - Hybrid Logic Foundation
-- Established Hybrid ID expiry logic (Ignoring cloud "Never Expire" for synced IDs).
+## [v2.7.0] - Export & History
+- Added CSV Export to Dashboard.
+- Added Version History tracking.

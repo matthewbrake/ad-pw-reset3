@@ -1,23 +1,22 @@
-
 import React, { useEffect, useRef, useState } from 'react';
 import { subscribeToLogs, log } from '../services/mockApi';
 import { LogEntry } from '../types';
 
 const ConsoleLog: React.FC<{ visible: boolean; onClose: () => void }> = ({ visible, onClose }) => {
     const [logs, setLogs] = useState<LogEntry[]>([]);
-    const [isVerbose, setIsVerbose] = useState(false);
+    const [isVerbose, setIsVerbose] = useState(true);
     const endRef = useRef<HTMLDivElement>(null);
 
-    const VERSION = "v2.5.1";
-    const UPDATED = "2024-05-22";
+    const VERSION = "v2.8.0 Enterprise";
+    const UPDATED = "2024-05-23";
 
     useEffect(() => {
         const unsubscribe = subscribeToLogs((entry) => {
             setLogs(prev => [...prev, entry]);
         });
         
-        // FIX: Directly call the log function to show initial build info instead of incorrectly invoking the subscribeToLogs return.
-        log('system', `CORE INIT: ${VERSION} Build ${UPDATED} | REPO: https://github.com/matthewbrake/ad-pw-reset2`);
+        log('system', `BOOTSTRAP: ${VERSION} Build ${UPDATED} | NODE: production`);
+        log('system', `PERSISTENCE: Monitoring /app/data/config for changes...`);
         
         return unsubscribe;
     }, []);
@@ -28,42 +27,42 @@ const ConsoleLog: React.FC<{ visible: boolean; onClose: () => void }> = ({ visib
         }
     }, [logs, visible]);
 
-    const filteredLogs = isVerbose ? logs : logs.filter(l => l.level !== 'system' || l.message.includes('INIT'));
+    const filteredLogs = isVerbose ? logs : logs.filter(l => l.level !== 'system' && l.level !== 'info');
 
     if (!visible) return null;
 
     return (
-        <div className="fixed bottom-0 left-0 right-0 h-64 bg-black/95 border-t border-gray-700 text-xs font-mono z-50 flex flex-col shadow-2xl backdrop-blur-sm">
-            <div className="flex justify-between items-center px-4 py-2 bg-gray-800 border-b border-gray-700">
-                <span className="font-bold text-gray-300 flex items-center gap-2">
-                    <span className="w-2 h-2 rounded-full bg-green-500 animate-pulse"></span>
-                    System Console <span className="text-gray-500 font-normal">{VERSION}</span>
+        <div className="fixed bottom-0 left-0 right-0 h-72 bg-[#020617]/95 border-t border-gray-800 text-[11px] font-mono z-50 flex flex-col shadow-[0_-20px_50px_rgba(0,0,0,0.5)] backdrop-blur-xl">
+            <div className="flex justify-between items-center px-6 py-3 bg-[#0f172a] border-b border-gray-800">
+                <span className="font-black text-gray-400 flex items-center gap-3">
+                    <div className="w-2.5 h-2.5 rounded-full bg-emerald-500 shadow-[0_0_10px_#10b981] animate-pulse"></div>
+                    SYSTEM CONSOLE <span className="text-primary-500 opacity-60 ml-2 font-mono">{VERSION}</span>
                 </span>
-                <div className="flex items-center space-x-4">
-                    <label className="flex items-center gap-2 cursor-pointer text-gray-400 hover:text-white transition-colors">
-                        <input type="checkbox" checked={isVerbose} onChange={e => setIsVerbose(e.target.checked)} className="w-3 h-3 bg-gray-700 border-gray-600 rounded" />
-                        <span className="text-[10px] font-bold uppercase">Verbose</span>
+                <div className="flex items-center space-x-6">
+                    <label className="flex items-center gap-3 cursor-pointer text-gray-500 hover:text-white transition-all">
+                        <input type="checkbox" checked={isVerbose} onChange={e => setIsVerbose(e.target.checked)} className="w-3.5 h-3.5 bg-gray-900 border-gray-700 rounded text-primary-600 focus:ring-0" />
+                        <span className="text-[10px] font-black uppercase tracking-widest">Enhanced Verbosity</span>
                     </label>
-                    <button onClick={() => setLogs([])} className="text-gray-400 hover:text-white px-2">Clear</button>
-                    <button onClick={onClose} className="text-gray-400 hover:text-white px-2">Hide</button>
+                    <button onClick={() => setLogs([])} className="text-[10px] font-black text-gray-600 hover:text-white uppercase tracking-widest">Flush Buffer</button>
+                    <button onClick={onClose} className="text-gray-400 hover:text-white text-xl px-2 font-light">&times;</button>
                 </div>
             </div>
-            <div className="flex-1 overflow-y-auto p-4 space-y-1">
-                {filteredLogs.length === 0 && <p className="text-gray-600 italic">Listening for system events...</p>}
+            <div className="flex-1 overflow-y-auto p-6 space-y-2 selection:bg-primary-500/30">
+                {filteredLogs.length === 0 && <p className="text-gray-700 italic font-black uppercase tracking-widest">Listening for fabric events...</p>}
                 {filteredLogs.map((log, i) => (
-                    <div key={i} className="flex space-x-2 border-b border-white/5 pb-1">
-                        <span className="text-gray-500 shrink-0">[{log.timestamp}]</span>
-                        <span className={`uppercase font-bold shrink-0 w-16 ${
+                    <div key={i} className="flex items-start space-x-4 group">
+                        <span className="text-gray-700 font-mono text-[9px] shrink-0 pt-0.5">[{log.timestamp}]</span>
+                        <span className={`uppercase font-black shrink-0 w-20 text-[10px] tracking-widest ${
                             log.level === 'error' ? 'text-red-500' :
                             log.level === 'warn' ? 'text-yellow-500' :
-                            log.level === 'success' ? 'text-green-500' : 
-                            log.level === 'system' ? 'text-purple-400' : 'text-blue-400'
+                            log.level === 'success' ? 'text-emerald-500' : 
+                            log.level === 'system' ? 'text-gray-500' : 'text-blue-500'
                         }`}>{log.level}</span>
-                        <span className="text-gray-300 break-all">
+                        <span className="text-gray-300 break-all font-medium group-hover:text-white transition-colors">
                             {log.message}
                             {(isVerbose && log.details) && (
-                                <span className="block ml-0 text-gray-500 whitespace-pre-wrap mt-1 bg-white/5 p-2 rounded">
-                                    {JSON.stringify(log.details, null, 2)}
+                                <span className="block ml-0 text-gray-600 font-mono text-[9px] mt-2 bg-black/40 p-3 rounded-lg border border-gray-800 shadow-inner">
+                                    {typeof log.details === 'object' ? JSON.stringify(log.details, null, 2) : log.details}
                                 </span>
                             )}
                         </span>
