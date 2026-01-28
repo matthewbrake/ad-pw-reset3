@@ -16,7 +16,7 @@ const Dashboard: React.FC = () => {
   const [filterNeverExpireOnly, setFilterNeverExpireOnly] = useState(false);
   const [quickFilter, setQuickFilter] = useState<'all' | 'critical' | 'expired' | 'safe'>('all');
 
-  const [graphConfig] = useLocalStorage<GraphApiConfig>('graphApiConfig', { tenantId: '', clientId: '', clientSecret: '' });
+  const [graphConfig] = useLocalStorage<GraphApiConfig>('graphApiConfig', { tenantId: '', clientId: '', clientSecret: '', defaultExpiryDays: 90 });
 
   const loadUsers = async () => {
     setLoading(true);

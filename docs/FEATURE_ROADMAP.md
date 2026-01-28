@@ -1,59 +1,58 @@
-# AD Notifier Enterprise - Feature Master Specification
+# Enterprise AD Notifier - Master Roadmap & Logic Specification
 
-## 1. DASHBOARD (REAL-TIME OBSERVABILITY)
-### UI Requirements
-- **Interactive Metric Cards**: Clicking "Critical," "Expired," or "Safe" filters the table instantly.
-- **Sync Control**: Refresh button displays "Last Sync: MM/DD HH:MM:SS" immediately adjacent.
-- **Data Export**: "Export CSV" button captures all calculated attributes for external reporting.
-- **Sorting**: All columns (Identity, Reset Date, Expiry, Days) must have high-visibility sort arrows.
+## 1. DASHBOARD & DATA OBSERAVBILITY
+### UI Features
+- **Stat Filtering**: Metric cards (Total, Healthy, Warning, Expired) act as toggles.
+- **Dynamic Sort**: Every column in the user table supports multi-mode sorting (Asc/Desc/None).
+- **Export Control**: CSV engine captures calculated fields (`DaysSinceReset`, `ExpiryDelta`).
+- **Last Sync Timestamp**: Displays the exact second the last Graph API handshake succeeded.
 
-### Calculation Logic
-- **Reset Date**: Pulled from `lastPasswordChangeDateTime`. If null (Cloud-only user), use `createdDateTime`.
-- **Expiry Date**: Reset Date + `GraphConfig.defaultExpiryDays`.
-- **Days Since Reset**: `CurrentTime - ResetDate`.
-- **Days Until Expiry**: `ExpiryDate - CurrentTime`.
-- **Hybrid Override (Critical)**: If `onPremisesSyncEnabled` is TRUE, the Entra ID "Never Expire" flag is IGNORED. The system calculates expiry based on the defined tenant default.
-- **Status Flags**: 
-  - `CRITICAL`: <= 14 days remaining.
-  - `EXPIRED`: <= 0 days (shown as negative numbers).
-  - `SAFE`: Everything else.
+### Calculation Formulas (Source of Truth)
+- **Hybrid Detection**: `if (onPremisesSyncEnabled === true) { ignoreCloudNeverExpire = true; }`
+- **Reset Delta**: `DaysSinceReset = Floor((Now - lastPasswordChangeDateTime) / 86400000)`
+- **Expiry Goal**: `ExpiryDate = lastPasswordChangeDateTime + config.defaultExpiryDays`
+- **Balance**: `DaysRemaining = Ceil((ExpiryDate - Now) / 86400000)`
 
-## 2. PROFILE ARCHITECT (TEMPLATING & ROUTING)
-### Logic & UI
-- **Group Verification**: "Verify" button performs a live count of targeted users before saving.
-- **Variable Mapping**:
-  - `{{user.displayName}}` -> John Doe
-  - `{{user.userPrincipalName}}` -> j.doe@company.com
-  - `{{expiryDate}}` -> MMM DD, YYYY
-  - `{{daysUntilExpiry}}` -> Integer
-- **Recipient Matrix**:
-  - `toUser`: Primary recipient.
-  - `toManager`: Resolves manager email via Graph API.
-  - `readReceipt`: Injects `Disposition-Notification-To` header in SMTP.
-- **Simulation**: Navigation buttons `<` and `>` allow cycling through every user in the selected group to preview the exact email they will receive.
+## 2. INFRASTRUCTURE & PERSISTENCE
+### Multi-Tenant Engine
+- **JSON Root**: `/app/data/config/environments.json` is the state master.
+- **Hot-Switching**: Context shifts instantly without container reload.
+- **Verification Flow**:
+  1. **Connectivity Check**: Ping `login.microsoftonline.com`.
+  2. **Auth Handshake**: Exchange Client Secret for Bearer Token.
+  3. **Scope Verification**: Attempt `GET /users` and `GET /groups`.
 
-## 3. INFRASTRUCTURE SETTINGS (CONNECTIVITY)
-### Identity (Azure)
-- **Grant Consent**: Primary action button. Generates: `https://login.microsoftonline.com/{tenantId}/adminconsent?client_id={clientId}`.
-- **Independent Buttons**: 
-  - `VERIFY CONNECTIVITY`: Tests Token, User Scopes, and Group Scopes.
-  - `COMMIT SETTINGS`: Saves to `/app/data/config/environments.json`.
-- **Security**: Eye icon to toggle visibility of Client Secret.
+### Delivery Fabric (SMTP)
+- **SSL/TLS Toggle**: Binary switch for Port 465 (Secure) vs 587 (STARTTLS).
+- **Relay Handshake**: Validates SMTP credentials with a 0-byte transmission before committing.
 
-### Delivery (SMTP)
-- **SSL Toggle**: Explicit boolean switch for Port 465 (SSL) vs Port 587 (STARTTLS).
-- **Independent Buttons**:
-  - `TEST HANDSHAKE`: Sends a system-level verification email.
-  - `COMMIT RELAY`: Saves relay info to persistence.
+## 3. NOTIFICATION ARCHITECT
+### Template Logic
+- **Simulation Mode**: Navigation controls allow "Record Cycling" through real user data to preview variable replacement.
+- **Variable Injection**:
+  - `{{user.displayName}}`: Common Name.
+  - `{{user.userPrincipalName}}`: UPN/Email.
+  - `{{expiryDate}}`: MMM DD, YYYY format.
+  - `{{daysUntilExpiry}}`: Raw integer.
+- **Routing Matrix**:
+  - `toUser`: Direct delivery.
+  - `toManager`: Graph Lookup for `manager` attribute.
+  - `toAdmins`: Static CSV fallback.
 
-## 4. DELIVERY QUEUE & AUDIT LOGS
-### Queue Logic
-- **States**: `PENDING` (Waiting for window), `IN-FLIGHT` (Transmitting), `SENT` (Completed).
-- **Control**: Ability to individual delete or "Clear All" pending tasks.
-### Audit Logic
-- **Persistence**: Every transmission is recorded in `history.json`.
-- **Fields**: Timestamp, Recipient, Profile Name, Status (Success/Fail), Error Code (if any).
+## 4. QUEUE & AUDIT SYSTEM
+### Transmission Lifecycle
+- **Stage 1 (Pending)**: Record enters `queue.json`.
+- **Stage 2 (Active)**: Background loop picks up record, status -> `IN-FLIGHT`.
+- **Stage 3 (Commit)**: SMTP success, record moved to `history.json`, status -> `SENT`.
+- **Stage 4 (Failed)**: Retries 3x, then moves to `history.json` with status `ERROR`.
 
-## 5. PERSISTENCE & ARCHITECTURE
-- **Storage**: Prioritize `/app/data/config/*.json`. Fallback to `.env` only for initial container boot.
-- **Verbosity**: All backend activities (Graph queries, SMTP handshakes) must stream to the UI Console in real-time.
+### Reporting
+- **Audit Table**: High-visibility log of all transmissions.
+- **Raw View**: Modal showing exact JSON payload of a historical event.
+
+## 5. SYSTEM CONSOLE (VERBOSITY)
+- **Level GRAY**: Informational (IO operations, background loops).
+- **Level BLUE**: System events (App boot, Sync start).
+- **Level GREEN**: Success (Auth verified, Email sent).
+- **Level YELLOW**: Warnings (Scope missing, Rate limits).
+- **Level RED**: Critical (Auth fail, Write failure).
