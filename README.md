@@ -1,11 +1,15 @@
-<div align="center">
+# Azure AD Password Expiry Notifier (Enterprise Edition)
 
-<img width="1200" height="475" alt="GHBanner" src="https://github.com/user-attachments/assets/0aa67016-6eaf-458a-adb2-6e31a0763ed6" />
+A professional-grade system for automated password expiration monitoring.
 
-  <h1>Built with AI Studio</h2>
+## 🚀 Quick Update
+Run this command to pull the latest changes and restart your container:
+```bash
+docker stop azure-password-notifier && docker rm azure-password-notifier && git pull https://github.com/matthewbrake/ad-pw-reset2 && docker-compose up -d --build
+```
 
-  <p>The fastest path from prompt to production with Gemini.</p>
+## 📂 Multi-Environment Profiles
+You can now save multiple sets of credentials (e.g., "Production", "Staging", "Pilot") and switch between them instantly in the Settings tab. These are saved in `./data/config/environments.json`.
 
-  <a href="https://aistudio.google.com/apps">Start building</a>
-
-</div>
+## 🛡 Hybrid Logic
+The app intelligently identifies Hybrid IDs. Even if Microsoft Entra ID reports "Never Expires," the app will calculate the on-prem expiry if `onPremisesSyncEnabled` is true.
