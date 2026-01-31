@@ -6,6 +6,7 @@ import nodemailer from 'nodemailer';
 import fs from 'fs';
 import dotenv from 'dotenv';
 
+// v3.2.0 "Obsidian-Hardened" - Enterprise Demo Edition
 dotenv.config();
 
 const __filename = fileURLToPath(import.meta.url);
@@ -13,35 +14,41 @@ const __dirname = path.dirname(__filename);
 
 const app = express();
 const PORT = process.env.PORT || 3000;
-const VERSION = "v2.8.5 Enterprise";
+const VERSION = "v3.2.0 Obsidian-Hardened";
 
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'dist')));
 
-// --- DATA PERSISTENCE LAYER ---
+// --- INFRASTRUCTURE: PERSISTENCE ENGINE ---
 const DATA_ROOT = path.join(__dirname, 'data');
 const CONFIG_DIR = path.join(DATA_ROOT, 'config');
 const LOGS_DIR = path.join(DATA_ROOT, 'logs');
+const STATE_DIR = path.join(DATA_ROOT, 'state');
 
-[DATA_ROOT, CONFIG_DIR, LOGS_DIR].forEach(dir => {
+[DATA_ROOT, CONFIG_DIR, LOGS_DIR, STATE_DIR].forEach(dir => {
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
 });
 
 const ENVIRONMENTS_FILE = path.join(CONFIG_DIR, 'environments.json');
-const HISTORY_FILE = path.join(CONFIG_DIR, 'history.json');
-const QUEUE_FILE = path.join(CONFIG_DIR, 'queue.json');
-const PROFILES_FILE = path.join(CONFIG_DIR, 'profiles.json');
+const HISTORY_FILE = path.join(STATE_DIR, 'history.json');
+const QUEUE_FILE = path.join(STATE_DIR, 'queue.json');
+
+const fileLog = (level, message, data = null) => {
+    const timestamp = new Date().toISOString();
+    const logLine = `[${timestamp}] [${level.toUpperCase()}] ${message} ${data ? (typeof data === 'string' ? data : JSON.stringify(data)) : ''}\n`;
+    process.stdout.write(logLine);
+    try { fs.appendFileSync(path.join(LOGS_DIR, `system.log`), logLine); } catch (e) {}
+};
 
 const writeJsonAtomic = (filePath, data) => {
     const tempPath = `${filePath}.${Date.now()}.tmp`;
     try {
-        fs.writeFileSync(tempPath, JSON.stringify(data, null, 2), 'utf-8');
+        const content = JSON.stringify(data, null, 2);
+        fs.writeFileSync(tempPath, content, 'utf-8');
         fs.renameSync(tempPath, filePath);
-        fileLog('system', `IO_COMMIT_SUCCESS: ${path.basename(filePath)}`);
     } catch (e) {
         if (fs.existsSync(tempPath)) fs.unlinkSync(tempPath);
-        fileLog('error', `IO_COMMIT_FAILED: ${path.basename(filePath)}`, e.message);
-        throw e;
+        fileLog('error', `IO_FAULT: Atomic write failed for ${path.basename(filePath)}`, e.message);
     }
 };
 
@@ -50,137 +57,242 @@ const readJsonSafe = (filePath, defaultValue = []) => {
         if (!fs.existsSync(filePath)) return defaultValue;
         const content = fs.readFileSync(filePath, 'utf-8').trim();
         return content ? JSON.parse(content) : defaultValue;
-    } catch (e) { return defaultValue; }
-};
-
-const fileLog = (level, message, data = null) => {
-    const timestamp = new Date().toISOString();
-    const logLine = `[${timestamp}] [${level.toUpperCase()}] ${message} ${data ? JSON.stringify(data) : ''}\n`;
-    process.stdout.write(logLine);
-    try { fs.appendFileSync(path.join(LOGS_DIR, `system.log`), logLine); } catch (e) {}
-};
-
-// --- CORE ENGINE ---
-const getActiveEnv = () => {
-    const envs = readJsonSafe(ENVIRONMENTS_FILE, []);
-    return envs.find(e => e.active) || envs[0];
-};
-
-app.get('/api/config', (req, res) => {
-    const env = getActiveEnv();
-    if (!env) return res.json({});
-    res.json({ ...env.graph, smtp: env.smtp });
-});
-
-app.post('/api/config', (req, res) => {
-    const payload = req.body;
-    let envs = readJsonSafe(ENVIRONMENTS_FILE, []);
-    let activeIdx = envs.findIndex(e => e.active);
-    if (activeIdx === -1) activeIdx = 0;
-    
-    if (envs[activeIdx]) {
-        envs[activeIdx].graph = {
-            tenantId: payload.tenantId,
-            clientId: payload.clientId,
-            clientSecret: payload.clientSecret,
-            defaultExpiryDays: payload.defaultExpiryDays || 90
-        };
-        envs[activeIdx].smtp = payload.smtp;
-        writeJsonAtomic(ENVIRONMENTS_FILE, envs);
+    } catch (e) { 
+        fileLog('warn', `IO_CORRUPTION: Using default for ${path.basename(filePath)}`);
+        return defaultValue; 
     }
-    res.json({ success: true });
-});
+};
 
-app.get('/api/users', async (req, res) => {
-    try {
-        const env = getActiveEnv();
-        const cfg = env?.graph;
-        if (!cfg?.clientId) {
-            fileLog('warn', 'Identity sync aborted: Missing ClientID.');
-            return res.json([]);
+// --- CORE: GRAPH API CLIENT (MS COMPLIANT) ---
+class GraphClient {
+    constructor(cfg) {
+        // PRIORITY: Environment variables (Docker/System) > File Config
+        this.cfg = {
+            tenantId: process.env.AZURE_TENANT_ID || cfg.tenantId,
+            clientId: process.env.AZURE_CLIENT_ID || cfg.clientId,
+            clientSecret: process.env.AZURE_CLIENT_SECRET || cfg.clientSecret,
+            defaultExpiryDays: cfg.defaultExpiryDays || 90
+        };
+        this.token = null;
+        this.expiry = null;
+    }
+
+    async getAccessToken() {
+        if (this.token && this.expiry && Date.now() < this.expiry) return this.token;
+        
+        if (!this.cfg.tenantId || !this.cfg.clientId || !this.cfg.clientSecret) {
+            throw new Error("AUTH_CONFIG_MISSING: Ensure TenantID, ClientID, and Secret are provided via UI or Docker ENV.");
         }
-        
-        fileLog('info', 'Synchronizing Identity Fabric with Microsoft Graph...');
-        const auth = await axios.post(`https://login.microsoftonline.com/${cfg.tenantId}/oauth2/v2.0/token`, new URLSearchParams({
-            client_id: cfg.clientId,
-            scope: 'https://graph.microsoft.com/.default',
-            client_secret: cfg.clientSecret,
-            grant_type: 'client_credentials'
-        }), { timeout: 10000 });
-        
-        fileLog('success', 'Token acquisition successful.');
 
-        const response = await axios.get('https://graph.microsoft.com/v1.0/users', {
-            headers: { Authorization: `Bearer ${auth.data.access_token}` },
-            params: { '$select': 'id,displayName,userPrincipalName,accountEnabled,passwordPolicies,lastPasswordChangeDateTime,createdDateTime,onPremisesSyncEnabled', '$top': 999 }
+        fileLog('info', `OAUTH_INIT: Requesting token for ${this.cfg.tenantId}`);
+        try {
+            const res = await axios.post(`https://login.microsoftonline.com/${this.cfg.tenantId}/oauth2/v2.0/token`, new URLSearchParams({
+                client_id: this.cfg.clientId,
+                scope: 'https://graph.microsoft.com/.default',
+                client_secret: this.cfg.clientSecret,
+                grant_type: 'client_credentials'
+            }), { timeout: 15000 });
+            
+            this.token = res.data.access_token;
+            this.expiry = Date.now() + (res.data.expires_in - 300) * 1000;
+            fileLog('success', 'OAUTH_READY: Bearer session established.');
+            return this.token;
+        } catch (e) {
+            const msg = e.response?.data?.error_description || e.message;
+            fileLog('error', 'OAUTH_FAILED', msg);
+            throw new Error(`Microsoft Auth Error: ${msg}`);
+        }
+    }
+
+    async request(url, params = {}) {
+        const token = await this.getAccessToken();
+        try {
+            return await axios.get(url, {
+                headers: { Authorization: `Bearer ${token}` },
+                params
+            });
+        } catch (e) {
+            // Handle MS Graph 429 (Throttling)
+            if (e.response?.status === 429) {
+                const retryAfter = parseInt(e.response.headers['retry-after']) || 2;
+                fileLog('warn', `THROTTLED: Microsoft Graph rate limit. Backing off ${retryAfter}s...`);
+                await new Promise(r => setTimeout(r, retryAfter * 1000));
+                return this.request(url, params);
+            }
+            throw e;
+        }
+    }
+
+    async fetchAll(endpoint, params = {}) {
+        let results = [];
+        let nextLink = endpoint;
+
+        while (nextLink) {
+            const res = await this.request(nextLink, nextLink === endpoint ? params : {});
+            results = results.concat(res.data.value);
+            nextLink = res.data['@odata.nextLink'];
+            if (nextLink) fileLog('info', `PAGINATION_ACTIVE: Aggregating directory... (${results.length} records)`);
+        }
+        return results;
+    }
+}
+
+// --- CORE: JOB PROCESSOR (ANTI-FLOOD / SERIAL) ---
+class JobProcessor {
+    static isProcessing = false;
+
+    static async run(profile, smtpCfg, users) {
+        if (this.isProcessing) throw new Error("BUSY: Another job is currently in progress.");
+        this.isProcessing = true;
+        
+        fileLog('info', `JOB_START: ${profile.name} processing ${users.length} targets.`);
+        const transporter = nodemailer.createTransport({
+            host: smtpCfg.host,
+            port: smtpCfg.port,
+            secure: smtpCfg.secure,
+            auth: { user: smtpCfg.username, pass: smtpCfg.password }
         });
 
-        const now = new Date();
-        const data = response.data.value.map(u => {
+        try {
+            for (const user of users) {
+                const mailOptions = {
+                    from: smtpCfg.fromEmail,
+                    to: user.userPrincipalName,
+                    subject: profile.subjectLine,
+                    text: profile.emailTemplate
+                        .replace(/{{user.displayName}}/g, user.displayName)
+                        .replace(/{{daysUntilExpiry}}/g, user.passwordExpiresInDays),
+                    headers: profile.recipients.readReceipt ? {
+                        'Disposition-Notification-To': smtpCfg.fromEmail,
+                        'Return-Receipt-To': smtpCfg.fromEmail
+                    } : {}
+                };
+
+                await transporter.sendMail(mailOptions);
+                fileLog('success', `DELIVERY_OK: ${user.userPrincipalName}`);
+                
+                // Atomic Audit Record
+                const history = readJsonSafe(HISTORY_FILE, []);
+                history.push({
+                    timestamp: new Date().toISOString(),
+                    recipient: user.userPrincipalName,
+                    profileId: profile.name,
+                    status: 'sent'
+                });
+                writeJsonAtomic(HISTORY_FILE, history.slice(-2000));
+
+                // Anti-Spam / Anti-Flood Buffer (2 Seconds)
+                await new Promise(r => setTimeout(r, 2000));
+            }
+        } finally {
+            this.isProcessing = false;
+            fileLog('info', `JOB_COMPLETE: ${profile.name}`);
+        }
+    }
+}
+
+const getActiveEnv = () => {
+    const envs = readJsonSafe(ENVIRONMENTS_FILE, []);
+    let env = envs.find(e => e.active) || envs[0];
+    if (!env) {
+        env = {
+            id: 'default', name: 'Global Controller', active: true,
+            graph: { tenantId: '', clientId: '', clientSecret: '', defaultExpiryDays: 90 },
+            smtp: { host: '', port: 587, secure: true, username: '', password: '', fromEmail: '' },
+            lastValidation: { auth: false, userScope: false, groupScope: false, timestamp: null }
+        };
+        writeJsonAtomic(ENVIRONMENTS_FILE, [env]);
+    }
+    return env;
+};
+
+// --- API: ROUTES (STRICT JSON) ---
+app.get('/api/config', (req, res) => res.json(getActiveEnv()));
+
+app.get('/api/users', async (req, res) => {
+    const env = getActiveEnv();
+    if (!env.graph.clientId && !process.env.AZURE_CLIENT_ID) return res.json([]);
+    
+    try {
+        const client = new GraphClient(env.graph);
+        const users = await client.fetchAll('https://graph.microsoft.com/v1.0/users', {
+            '$select': 'id,displayName,userPrincipalName,accountEnabled,passwordPolicies,lastPasswordChangeDateTime,createdDateTime,onPremisesSyncEnabled',
+            '$top': 999
+        });
+
+        const processed = users.map(u => {
             const isHybrid = u.onPremisesSyncEnabled === true;
             const never = (u.passwordPolicies || "").includes("DisablePasswordExpiration") && !isHybrid;
             let last = u.lastPasswordChangeDateTime || u.createdDateTime;
-            
             let exp = new Date(last);
-            exp.setDate(exp.getDate() + (cfg.defaultExpiryDays || 90));
-            const diff = Math.ceil((exp - now) / 86400000);
-            const resetDiff = Math.floor((now - new Date(last)) / 86400000);
-
-            return { 
-                ...u, 
-                passwordLastSetDateTime: last, 
-                passwordExpiresInDays: never ? 999 : diff, 
-                passwordExpiryDate: never ? null : exp.toISOString(), 
+            exp.setDate(exp.getDate() + (env.graph.defaultExpiryDays || 90));
+            return {
+                ...u,
+                passwordLastSetDateTime: last,
+                passwordExpiresInDays: never ? 999 : Math.ceil((exp - new Date()) / 86400000),
+                passwordExpiryDate: never ? null : exp.toISOString(),
                 neverExpires: never,
-                daysSinceLastReset: resetDiff
+                daysSinceLastReset: Math.floor((new Date() - new Date(last)) / 86400000)
             };
         });
-        fileLog('success', `Sync Complete: ${data.length} records processed.`);
-        res.json(data);
+        return res.json(processed);
     } catch (e) {
-        fileLog('error', 'Entra ID Sync Error', e.response?.data || e.message);
-        res.status(500).json({ error: e.message });
+        fileLog('error', 'FETCH_USERS_FAULT', e.message);
+        return res.status(500).json({ message: e.message });
     }
 });
 
 app.post('/api/validate-permissions', async (req, res) => {
-    const env = getActiveEnv();
-    const cfg = env?.graph;
-    const checks = { connectivity: false, auth: false, userScope: false, groupScope: false };
+    const cfg = req.body.tenantId ? req.body : getActiveEnv().graph;
+    const checks = { auth: false, userScope: false, groupScope: false, timestamp: new Date().toISOString() };
+    
     try {
-        fileLog('info', 'Initializing Security Scope Validation...');
-        const authRes = await axios.post(`https://login.microsoftonline.com/${cfg.tenantId}/oauth2/v2.0/token`, new URLSearchParams({
-            client_id: cfg.clientId,
-            scope: 'https://graph.microsoft.com/.default',
-            client_secret: cfg.clientSecret,
-            grant_type: 'client_credentials'
-        }), { timeout: 8000 });
-        
-        checks.auth = true; 
-        checks.connectivity = true;
-        fileLog('success', 'OAuth Handshake Verified.');
+        const client = new GraphClient(cfg);
+        const token = await client.getAccessToken();
+        checks.auth = true;
 
-        const token = authRes.data.access_token;
-        try { 
-            await axios.get('https://graph.microsoft.com/v1.0/users?$top=1', { headers: { Authorization: `Bearer ${token}` } }); 
-            checks.userScope = true;
-            fileLog('success', 'User.Read.All Permission Verified.');
-        } catch (e) { fileLog('error', 'User Scope Denied.'); }
-        
-        try { 
-            await axios.get('https://graph.microsoft.com/v1.0/groups?$top=1', { headers: { Authorization: `Bearer ${token}` } }); 
-            checks.groupScope = true; 
-            fileLog('success', 'Group.Read.All Permission Verified.');
-        } catch (e) { fileLog('error', 'Group Scope Denied.'); }
-        
-        res.json({ success: checks.userScope, checks, message: "Security scopes evaluated." });
-    } catch (e) { 
-        fileLog('error', 'Auth Engine Error', e.response?.data || e.message);
-        res.status(400).json({ success: false, checks, message: e.message }); 
+        await axios.get('https://graph.microsoft.com/v1.0/users?$top=1', { headers: { Authorization: `Bearer ${token}` } });
+        checks.userScope = true;
+
+        await axios.get('https://graph.microsoft.com/v1.0/groups?$top=1', { headers: { Authorization: `Bearer ${token}` } });
+        checks.groupScope = true;
+
+        let envs = readJsonSafe(ENVIRONMENTS_FILE, []);
+        let active = envs.find(e => e.id === req.body.envId) || envs.find(e => e.active) || envs[0];
+        if (active) {
+            active.lastValidation = checks;
+            writeJsonAtomic(ENVIRONMENTS_FILE, envs);
+            fileLog('success', 'VALIDATION_LOCKED: State persistent in context.');
+        }
+
+        return res.json({ success: true, checks });
+    } catch (e) {
+        const msg = e.response?.data?.error_description || e.message;
+        fileLog('error', 'PERM_CHECK_FAILED', msg);
+        return res.status(401).json({ success: false, checks, message: msg });
     }
 });
 
-app.get('/api/environments', (req, res) => res.json(readJsonSafe(ENVIRONMENTS_FILE, [])));
+app.post('/api/verify-group', async (req, res) => {
+    const { name } = req.body;
+    const env = getActiveEnv();
+    try {
+        const client = new GraphClient(env.graph);
+        const gRes = await client.request(`https://graph.microsoft.com/v1.0/groups`, {
+            '$filter': `displayName eq '${name}'`,
+            '$select': 'id,displayName'
+        });
+
+        if (gRes.data.value.length === 0) return res.status(404).json({ message: `NOT_FOUND: Group '${name}' does not exist in this tenant.` });
+        
+        const groupId = gRes.data.value[0].id;
+        const members = await client.fetchAll(`https://graph.microsoft.com/v1.0/groups/${groupId}/transitiveMembers`, { '$select': 'id' });
+        
+        return res.json({ success: true, id: groupId, count: members.length });
+    } catch (e) {
+        return res.status(500).json({ message: e.message });
+    }
+});
 
 app.post('/api/environments', (req, res) => {
     const payload = req.body;
@@ -189,36 +301,29 @@ app.post('/api/environments', (req, res) => {
     if (payload.action === 'add') {
         envs.forEach(e => e.active = false);
         envs.push({
-            id: Date.now().toString(),
-            name: payload.name || 'New Infrastructure',
-            active: true,
+            id: Date.now().toString(), name: payload.name, active: true,
             graph: { tenantId: '', clientId: '', clientSecret: '', defaultExpiryDays: 90 },
-            smtp: { host: '', port: 587, secure: true, username: '', password: '', fromEmail: '' }
+            smtp: { host: '', port: 587, secure: true, username: '', password: '', fromEmail: '' },
+            lastValidation: { auth: false, userScope: false, groupScope: false, timestamp: null }
         });
-        fileLog('system', `Registered New Infrastructure Profile: ${payload.name}`);
     } else if (payload.action === 'switch') {
         envs.forEach(e => e.active = e.id === payload.id);
-        fileLog('system', `Switched Environment Scope to: ${payload.id}`);
-    } else if (payload.action === 'delete') {
-        envs = envs.filter(e => e.id !== payload.id);
-        if (envs.length > 0 && !envs.find(e => e.active)) envs[0].active = true;
-        fileLog('warn', `Purged Environment Profile: ${payload.id}`);
+    } else if (payload.action === 'update') {
+        let env = envs.find(e => e.id === payload.id);
+        if (env) {
+            if (payload.graph) env.graph = payload.graph;
+            if (payload.smtp) env.smtp = payload.smtp;
+        }
     }
     
     writeJsonAtomic(ENVIRONMENTS_FILE, envs);
-    res.json({ success: true });
+    return res.json({ success: true });
 });
 
-// History & Queue Placeholder Endpoints
-app.get('/api/history', (req, res) => res.json(readJsonSafe(HISTORY_FILE, [])));
+app.get('/api/environments', (req, res) => res.json(readJsonSafe(ENVIRONMENTS_FILE, [])));
+app.get('/api/history', (req, res) => res.json(readJsonSafe(HISTORY_FILE, []).reverse()));
 app.get('/api/queue', (req, res) => res.json(readJsonSafe(QUEUE_FILE, [])));
-app.post('/api/queue/clear', (req, res) => {
-    writeJsonAtomic(QUEUE_FILE, []);
-    fileLog('warn', 'Transmission queue buffer cleared.');
-    res.json({ success: true });
-});
 
 app.listen(PORT, () => {
-    fileLog('system', `AD NOTIFIER ENGINE ${VERSION} STARTUP COMPLETE`);
-    fileLog('system', `BIND_PORT: ${PORT} | PLATFORM: hybrid-linux-alpine`);
+    fileLog('system', `BOOT_MASTER: ${VERSION} online on port ${PORT}`);
 });

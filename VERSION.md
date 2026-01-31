@@ -1,13 +1,12 @@
 # Version History - AD Notifier Enterprise
 
-## [v2.8.0] - Mission Control Restoration
-- **Fixed**: Tab-switching data loss by standardizing `/api/config` as the primary state engine.
-- **Restored**: Permission Checklist (Green/Red) for Azure AD Scopes.
-- **Restored**: "Last Sync" timestamp on Dashboard.
-- **Improved**: Console verbosity with strict color-coding (Gray, Yellow, Red, Green).
-- **Improved**: Environment switcher now allows naming profiles before adding.
-- **Design**: Reverted button sizes and fonts to match the high-contrast slate side-nav.
+## [v2.9.1] - Stream Integrity & Null-Ref Patch
+- **Fixed**: `ReadableStreamDefaultController` JSON parsing error by implementing a robust `fetch` wrapper in the service layer.
+- **Fixed**: `tenantId` undefined crash by hardening the `getActiveEnv` logic to always return valid property paths.
+- **Improved**: Admin Consent URL now handles empty Tenant IDs gracefully without crashing the UI.
+- **Improved**: Added "Safety Return" patterns to Express routes to prevent potential stream double-write conditions.
 
-## [v2.7.0] - Export & History
-- Added CSV Export to Dashboard.
-- Added Version History tracking.
+## [v2.9.0] - Mission Control (Self-Healing)
+- Fixed `tenantId` undefined error with "Factory Default" auto-init.
+- Settings buttons resized to match sidebar.
+- Environment "Plus" button logic fixed.
