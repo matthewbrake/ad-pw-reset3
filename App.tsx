@@ -6,7 +6,7 @@ import Profiles from './components/Profiles';
 import QueueViewer from './components/QueueViewer';
 import AuditLog from './components/AuditLog';
 import ConsoleLog from './components/ConsoleLog';
-import { saveBackendConfig, log } from './services/mockApi';
+import { saveBackendConfig, log, fetchConfig } from './services/mockApi';
 import { GraphApiConfig, SmtpConfig } from './types';
 
 type Tab = 'dashboard' | 'profiles' | 'queue' | 'audit' | 'settings';
@@ -18,22 +18,17 @@ const App: React.FC = () => {
   useEffect(() => {
     const syncWithBackend = async () => {
         try {
-            const res = await fetch('/api/config');
-            if (!res.ok) throw new Error('Failed to fetch config');
-            
-            const serverConfig = await res.json();
+            const serverConfig = await fetchConfig();
             
             // Check Browser State
             const localGraphStr = localStorage.getItem('graphApiConfig');
             const localSmtpStr = localStorage.getItem('smtpConfig');
 
-            // Corrected: serverConfig follows EnvironmentProfile structure from backend.
             if (!serverConfig.graph?.clientId && localGraphStr) {
                 log('info', 'Server is unconfigured. Pushing browser settings to backend...');
                 try {
                     const g: GraphApiConfig = JSON.parse(localGraphStr);
                     const s: SmtpConfig = JSON.parse(localSmtpStr || '{}');
-                    // Corrected: pass environment ID for targeted update.
                     await saveBackendConfig(g, s, serverConfig.id);
                     log('success', 'Backend synchronized successfully.');
                 } catch (pe) {
@@ -41,7 +36,6 @@ const App: React.FC = () => {
                 }
             } else if (serverConfig.graph?.clientId) {
                 log('info', 'Server configuration detected. Updating local browser state.');
-                // Corrected: extract graph config from nested property.
                 localStorage.setItem('graphApiConfig', JSON.stringify({
                     tenantId: serverConfig.graph.tenantId,
                     clientId: serverConfig.graph.clientId,
@@ -51,7 +45,7 @@ const App: React.FC = () => {
                 localStorage.setItem('smtpConfig', JSON.stringify(serverConfig.smtp));
             }
         } catch (e) {
-            log('error', 'Sync with backend failed. Ensure server is reachable.');
+            log('error', 'Sync with backend failed. Check infrastructure logs.');
         }
     };
     syncWithBackend();
@@ -63,7 +57,6 @@ const App: React.FC = () => {
       case 'profiles': return <Profiles />;
       case 'queue': return <QueueViewer />;
       case 'audit': return <AuditLog />;
-      // FIX: Removed 'toggleConsole' prop as the Settings component doesn't expect it.
       case 'settings': return <Settings />;
       default: return <Dashboard />;
     }

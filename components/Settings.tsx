@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { GraphApiConfig, SmtpConfig, EnvironmentProfile } from '../types';
-import { validateGraphPermissions, log, saveBackendConfig } from '../services/mockApi';
+import { validateGraphPermissions, log, saveBackendConfig, fetchConfig, fetchEnvironments, switchEnvironment, addEnvironment } from '../services/mockApi';
 import { CheckCircleIcon, XCircleIcon, PlusCircleIcon } from './icons';
 
 const Settings: React.FC = () => {
@@ -21,14 +21,11 @@ const Settings: React.FC = () => {
   const [validatingGraph, setValidatingGraph] = useState(false);
   const [graphChecks, setGraphChecks] = useState<any>({ auth: false, userScope: false, groupScope: false });
 
-  const loadEnvs = async () => {
+  const loadData = async () => {
       try {
-          const res = await fetch('/api/config');
-          if (!res.ok) throw new Error('Fetch Error');
-          const active = await res.json();
+          const active = await fetchConfig();
+          const envsData = await fetchEnvironments();
           
-          const envsRes = await fetch('/api/environments');
-          const envsData = await envsRes.json();
           setEnvironments(envsData);
           
           if (active) {
@@ -36,25 +33,33 @@ const Settings: React.FC = () => {
               setGraphConfig(active.graph || { tenantId: '', clientId: '', clientSecret: '', defaultExpiryDays: 90 });
               setSmtpConfig(active.smtp || { host: '', port: 587, secure: true, username: '', password: '', fromEmail: '' });
               
-              // REHYDRATION: Restore the "Green Lights" from the server-side state
-              if (active.lastValidation) {
-                  setGraphChecks(active.lastValidation);
+              // REHYDRATION: Restore validation states if present
+              if ((active as any).lastValidation) {
+                  setGraphChecks((active as any).lastValidation);
               }
           }
-      } catch (e: any) { log('error', 'CORE_REHYDRATION_FAILED: Ensure backend is operational.'); }
+      } catch (e: any) { 
+          log('error', 'CORE_REHYDRATION_FAILED: Check backend connectivity.'); 
+      }
   };
 
-  useEffect(() => { loadEnvs(); }, []);
+  useEffect(() => { loadData(); }, []);
 
   const handleSwitch = async (id: string) => {
       try {
-          await fetch('/api/environments', {
-              method: 'POST',
-              headers: {'Content-Type': 'application/json'},
-              body: JSON.stringify({ id, action: 'switch' })
-          });
-          loadEnvs();
-          log('info', `CONTEXT_SHIFT: Switching to environment ${id}`);
+          await switchEnvironment(id);
+          loadData();
+          log('info', `CONTEXT_SHIFT: Active environment set to ${id}`);
+      } catch (e: any) { log('error', e.message); }
+  };
+
+  const handleAdd = async () => {
+      if(!newEnvName) return;
+      try {
+          await addEnvironment(newEnvName);
+          setNewEnvName(''); 
+          loadData();
+          log('success', `ENVIRONMENT_CREATED: ${newEnvName} is now active.`);
       } catch (e: any) { log('error', e.message); }
   };
 
@@ -72,8 +77,7 @@ const Settings: React.FC = () => {
   const handleSave = async () => {
       try {
           await saveBackendConfig(graphConfig, smtpConfig, activeEnvId);
-          log('success', 'INFRASTRUCTURE_SYNC: Configuration committed and locked.');
-          // Sync browser local storage to match
+          log('success', 'INFRASTRUCTURE_SYNC: Configuration committed.');
           localStorage.setItem('graphApiConfig', JSON.stringify(graphConfig));
           localStorage.setItem('smtpConfig', JSON.stringify(smtpConfig));
       } catch (e: any) { 
@@ -98,11 +102,7 @@ const Settings: React.FC = () => {
                 onChange={e => setNewEnvName(e.target.value)}
                 className="bg-gray-900 border border-gray-800 rounded-lg px-4 py-2 text-[10px] font-black text-white outline-none focus:border-primary-500 w-48"
               />
-              <button onClick={async () => {
-                  if(!newEnvName) return;
-                  await fetch('/api/environments', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ name: newEnvName, action: 'add' })});
-                  setNewEnvName(''); loadEnvs();
-              }} className="p-2.5 bg-primary-600 rounded-lg hover:bg-primary-500 transition-all shadow-lg shadow-primary-900/20">
+              <button onClick={handleAdd} className="p-2.5 bg-primary-600 rounded-lg hover:bg-primary-500 transition-all shadow-lg shadow-primary-900/20">
                   <PlusCircleIcon className="w-5 h-5 text-white" />
               </button>
               <div className="h-8 w-[1px] bg-gray-800 mx-2"></div>

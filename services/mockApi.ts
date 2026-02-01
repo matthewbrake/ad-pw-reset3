@@ -1,28 +1,31 @@
-import { User, GraphApiConfig, SmtpConfig, NotificationProfile, LogEntry, PermissionResult, JobResult } from '../types';
+import { User, GraphApiConfig, SmtpConfig, NotificationProfile, LogEntry, EnvironmentProfile } from '../types';
 
 let listeners: ((log: LogEntry) => void)[] = [];
 
-// HARDENED: Unified Fetch Handler
-// Uses .text() then JSON.parse() to bypass "Unexpected non-whitespace character" errors
-// associated with browser-side ReadableStream closure bugs in proxy environments.
-const apiRequest = async (url: string, options: RequestInit = {}) => {
+/**
+ * Unified Hardened Fetch Handler
+ * Prevents "Unexpected non-whitespace character" errors by consuming the stream 
+ * as text first, then attempting to parse.
+ */
+export const apiRequest = async (url: string, options: RequestInit = {}) => {
     try {
         const response = await fetch(url, options);
         const text = await response.text();
         const trimmed = text.trim();
         
-        let data: any = {};
+        let data: any = null;
         if (trimmed) {
             try {
                 data = JSON.parse(trimmed);
             } catch (e) {
-                log('error', `PARSE_ERROR: Response was not valid JSON.`, trimmed.substring(0, 100));
-                throw new Error("SERVER_FAULT: Received malformed response from backend.");
+                // Log the failure to the in-app console for debugging
+                log('error', `SERVER_BODY_MALFORMED: Expected JSON, got: "${trimmed.substring(0, 50)}..."`);
+                throw new Error(`Parse Failed: Received non-JSON response from ${url}`);
             }
         }
 
         if (!response.ok) {
-            throw new Error(data.message || `HTTP_ERROR: ${response.status}`);
+            throw new Error(data?.message || `Server Error: ${response.status}`);
         }
 
         return data;
@@ -47,7 +50,17 @@ export const subscribeToLogs = (listener: (log: LogEntry) => void) => {
     return () => { listeners = listeners.filter(l => l !== listener); };
 };
 
-export const fetchUsers = async (config: GraphApiConfig): Promise<User[]> => {
+// --- Unified API Surface ---
+
+export const fetchConfig = async (): Promise<EnvironmentProfile> => {
+    return apiRequest('/api/config');
+};
+
+export const fetchEnvironments = async (): Promise<EnvironmentProfile[]> => {
+    return apiRequest('/api/environments');
+};
+
+export const fetchUsers = async (config?: GraphApiConfig): Promise<User[]> => {
   log('info', 'FABRIC_SYNC: Fetching directory from Entra ID...');
   try {
     const data = await apiRequest('/api/users');
@@ -74,7 +87,7 @@ export const validateGraphPermissions = async (config: GraphApiConfig, envId?: s
 };
 
 export const saveBackendConfig = async (graph: GraphApiConfig, smtp: SmtpConfig, id: string) => {
-    log('info', `SYNCING_CONTEXT: committing configuration for environment [${id}]`);
+    log('info', `SYNCING_CONTEXT: Committing configuration for environment [${id}]`);
     return await apiRequest('/api/environments', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -82,26 +95,55 @@ export const saveBackendConfig = async (graph: GraphApiConfig, smtp: SmtpConfig,
     });
 };
 
-export const verifyGroup = async (name: string) => {
-    log('info', `LOOKUP: Finding group '${name}' in directory...`);
-    try {
-        const data = await apiRequest('/api/verify-group', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ name })
-        });
-        log('success', `FOUND: Group '${name}' has ${data.count} transitive members.`);
-        return data;
-    } catch (e: any) {
-        throw e;
-    }
+export const switchEnvironment = async (id: string) => {
+    return apiRequest('/api/environments', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id, action: 'switch' })
+    });
 };
 
-export const runNotificationJob = async (profile: NotificationProfile, mode: 'preview' | 'test' | 'live') => {
-    log('info', `DEPLOYMENT: Initiating ${mode} job for profile [${profile.name}]`);
-    // Note: The actual job run endpoint should be implemented in server.js to utilize JobProcessor
-    return { success: true, logs: [] };
+export const addEnvironment = async (name: string) => {
+    return apiRequest('/api/environments', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name, action: 'add' })
+    });
 };
+
+export const verifyGroupDetailed = async (name: string, expiryDays?: number) => {
+    return apiRequest('/api/verify-group-detailed', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name, expiryDays })
+    });
+};
+
+export const fetchHistory = async () => {
+    return apiRequest('/api/history');
+};
+
+export const fetchQueue = async () => {
+    return apiRequest('/api/queue');
+};
+
+export const toggleQueue = async () => {
+    return apiRequest('/api/queue/toggle', { method: 'POST' });
+};
+
+export const cancelQueueItem = async (id: string) => {
+    return apiRequest('/api/queue/cancel', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id })
+    });
+};
+
+export const clearQueue = async () => {
+    return apiRequest('/api/queue/clear', { method: 'POST' });
+};
+
+// --- Local Storage Management ---
 
 export const fetchProfiles = async (): Promise<NotificationProfile[]> => {
     const s = localStorage.getItem('notification_profiles');
@@ -120,4 +162,9 @@ export const saveProfile = async (profile: NotificationProfile) => {
 export const deleteProfile = async (id: string) => {
     let profiles = await fetchProfiles();
     localStorage.setItem('notification_profiles', JSON.stringify(profiles.filter(p => p.id !== id)));
+};
+
+export const runNotificationJob = async (profile: NotificationProfile, mode: 'preview' | 'test' | 'live') => {
+    log('info', `DEPLOYMENT: Initiating ${mode} job for profile [${profile.name}]`);
+    return { success: true, logs: [] };
 };
